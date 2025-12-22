@@ -4,9 +4,9 @@ use std::fs;
 use std::path::Path;
 
 fn main() {
-    println!("cargo:rerun-if-changed=contracts/GateLock.json");
+    println!("cargo:rerun-if-changed=contracts/out/GateLock.sol/GateLock.json");
 
-    let out_path = Path::new("src").join("generated_contracts.rs");
+    let out_path = Path::new("src").join("contract_bindings.rs");
     let content = r#"#[rustfmt::skip]
 pub mod gate_lock {
     alloy::sol!(
@@ -14,7 +14,7 @@ pub mod gate_lock {
         #[sol(rpc, abi)]
         #[derive(Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
         GateLock,
-        "contracts/GateLock.json"
+        "contracts/out/GateLock.sol/GateLock.json"
     );
 }
 "#;
