@@ -7,8 +7,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 RUN curl -L https://foundry.paradigm.xyz | bash && \
-    /root/.foundry/bin/foundryup && \
-    echo 'export PATH=$PATH:/root/.foundry/bin' >> /root/.profile
+    /root/.foundry/bin/foundryup
 
 ENV PATH="/root/.foundry/bin:${PATH}"
 

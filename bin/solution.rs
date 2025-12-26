@@ -5,7 +5,7 @@ use evm_knowledge::{
     fetch_values,
     contract_bindings::gate_lock::GateLock
 };
-use revm::{Database, DatabaseRef, Evm, primitives::TransactTo, db::WrapDatabaseRef};
+use revm::{Database, DatabaseRef, Evm, primitives::TransactTo, db::CacheDB};
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -21,7 +21,7 @@ async fn main() -> eyre::Result<()> {
 // your solution goes here.
 async fn solve<DB: DatabaseRef>(contract_address: Address, db: DB) -> eyre::Result<bool> 
 {
-    let mut wrapped_db = WrapDatabaseRef(db);
+    let mut cache_db = CacheDB::new(db);
     
     let slot_contract_value_mapping_bytes = U256::from(2).to_be_bytes::<32>();
     let mut ids = Vec::new();
@@ -32,7 +32,7 @@ async fn solve<DB: DatabaseRef>(contract_address: Address, db: DB) -> eyre::Resu
         let key_bytes = slot.to_be_bytes::<32>();
         let hash = keccak256([key_bytes, slot_contract_value_mapping_bytes].concat());
         let storage_slot = U256::from_be_slice(hash.as_slice());
-        let values = match wrapped_db.storage(contract_address, storage_slot) {
+        let values = match cache_db.storage(contract_address, storage_slot) {
             Ok(val) => val,
             Err(_) => {
                 return Err(eyre::eyre!("Storage read failed"));
@@ -42,6 +42,15 @@ async fn solve<DB: DatabaseRef>(contract_address: Address, db: DB) -> eyre::Resu
             ids.pop();
             break;
         }
+        
+        let bit_for_unlocked = U256::from(1) << 224;
+        let unlocked_values = values | bit_for_unlocked;
+        match cache_db.insert_account_storage(contract_address, storage_slot, unlocked_values) {
+            Ok(_) => {},
+            Err(_) => {
+                return Err(eyre::eyre!("Storage write failed"));
+            }
+        };
         
         let mask_for_first_64_bits = U256::from((1u128 << 64) - 1);
         let first_value = values & mask_for_first_64_bits;
@@ -62,7 +71,7 @@ async fn solve<DB: DatabaseRef>(contract_address: Address, db: DB) -> eyre::Resu
     
     // https://github.com/bluealloy/revm/issues/1803
     let mut evm = Evm::builder()
-        .with_db(&mut wrapped_db)
+        .with_db(&mut cache_db)
         .modify_tx_env(|tx| {
             tx.caller = Address::ZERO;
             tx.transact_to = TransactTo::Call(contract_address);
@@ -91,5 +100,6 @@ async fn solve<DB: DatabaseRef>(contract_address: Address, db: DB) -> eyre::Resu
         }
     };
 
+    println!("Is solved: {}", is_solved.res);
     Ok(is_solved.res)
 }
