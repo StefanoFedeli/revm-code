@@ -1,11 +1,11 @@
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, U256, keccak256};
 use alloy::sol_types::SolCall;
 use evm_knowledge::{
     environment_deployment::{deploy_lock_contract, spin_up_anvil_instance},
     fetch_values,
     contract_bindings::gate_lock::GateLock
 };
-use revm::{DatabaseRef, Evm, primitives::TransactTo, db::WrapDatabaseRef};
+use revm::{Database, DatabaseRef, Evm, primitives::TransactTo, db::WrapDatabaseRef};
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -23,8 +23,44 @@ async fn solve<DB: DatabaseRef>(contract_address: Address, db: DB) -> eyre::Resu
 {
     let mut wrapped_db = WrapDatabaseRef(db);
     
-    let call_data = GateLock::isSolvedCall { ids: vec![U256::ZERO] }.abi_encode();
+    let slot_contract_value_mapping_bytes = U256::from(2).to_be_bytes::<32>();
+    let mut ids = Vec::new();
+    let mut slot = U256::ZERO;
     
+    loop {
+        ids.push(slot);
+        let key_bytes = slot.to_be_bytes::<32>();
+        let hash = keccak256([key_bytes, slot_contract_value_mapping_bytes].concat());
+        let storage_slot = U256::from_be_slice(hash.as_slice());
+        let values = match wrapped_db.storage(contract_address, storage_slot) {
+            Ok(val) => val,
+            Err(_) => {
+                return Err(eyre::eyre!("Storage read failed"));
+            }
+        };
+        if values == U256::ZERO {
+            ids.pop();
+            break;
+        }
+        
+        let mask_for_first_64_bits = U256::from((1u128 << 64) - 1);
+        let first_value = values & mask_for_first_64_bits;
+        
+        let values_shifted_right_64 = values >> U256::from(64);
+        let mask_for_next_160_bits = (U256::from(1) << 160) - U256::from(1);
+        let second_value = values_shifted_right_64 & mask_for_next_160_bits;
+        
+        let is_even = first_value % U256::from(2) == U256::ZERO;
+        if is_even {
+            slot = first_value;
+        } else {
+            slot = second_value;
+        }
+    }
+    
+    let call_data = GateLock::isSolvedCall { ids: ids }.abi_encode();
+    
+    // https://github.com/bluealloy/revm/issues/1803
     let mut evm = Evm::builder()
         .with_db(&mut wrapped_db)
         .modify_tx_env(|tx| {
@@ -40,12 +76,18 @@ async fn solve<DB: DatabaseRef>(contract_address: Address, db: DB) -> eyre::Resu
             return Err(eyre::eyre!("EVM transaction failed!"));
         }
     };
+    
+    let output = match tx_res.result.output() {
+        Some(out) => out,
+        None => {
+            return Err(eyre::eyre!("No output from transaction"));
+        }
+    };
 
-    let output = tx_res.result.output().unwrap_or_default();
     let is_solved = match GateLock::isSolvedCall::abi_decode_returns(&output, true) {
         Ok(res) => res,
-        Err(_) => {
-            return Err(eyre::eyre!("Failed to decode return value"));
+        Err(e) => {
+            return Err(eyre::eyre!("Failed to decode return value: {:?}", e));
         }
     };
 
